@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+This code finds all of the solutions required for ME332 Design Project 2 Fall
+2016.
+
+Overall assumptions:
+    1. Negligible heat loss to the surroundings.  Factoring in these losses
+        will not result in any loss of points, however the losses are much less
+        than the overall heat transfer rate of the heat exchanger and therefore
+        full credit may be given if the losses are not taken into account.
+    2. Negligible kinetic and potential energy changes.
+    3. Constant properties.
+    4. Fully developed, steady state conditions.
+
+For sake of ease, all units will be in degrees C, kg, m, seconds, and Joules
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Set up all of the given information and constants
+
+# Temperatures in degrees C
+Ts_i = 100
+Ts_f = 30
+Tc_i = 0
+
+# Volumetric flow rate of solution in m^3/sec
+V_s = 5 / (1003 * 60)
+
+# Density of fluids/materials in kg/m^3
+rho_w = 1000
+rho_alloy625 = 8440
+
+# Operational time in seconds for the values to be optimized to
+optime = 50 * 60 * 60
+
+# Maximum allowable pressure drop in Pascals
+maxdpdx = 500000
+
+# Conductivity of Alloy 625
+k625 = 9.8
+
+# -----------------------------------------------------------------
+# Assumptions about the fluid properties, found in the back of the book.
+# Use properties at 300K.
+
+cpwater = 4179
+cpair = 1007
+kwater = 0.613
+kair = 26.3/1000
+Prandtl_air = 0.707
+mu_air = 184.6e-7
+rho_air = 1.1614
+
+# -----------------------------------------------------------------
+# Derived values
+
+# Overall temperature drop of solution across heat exchanger
+dT_overall = Ts_i - Ts_f
+
+# Mass flow rate of solution in kg/sec
+mdot = V_s * rho_w
+
+# Overall heat transfer rate from solution
+q_overall = mdot * cpwater * dT_overall
+
+
+# Finds the total cost of the heat exchanger with operational costs considered
+def totalcost(r, l, mdotcoolant):
+    # The number that is multiplied by the radius combines the cost per kg of
+    # the metal along with the geometry of the heat exchanger, etc.
+    return 7084487.783 * (r**2) * l + 1800*mdotcoolant
+
+
+# Finds all the radii using the inner radius of the inner tube
+def hxradius(itir):
+    itor = 1.25 * itir
+    otir = 2 * itir
+    otor = 1.25 * otir
+    return itor, otir, otor
+
+
+# Finds the log mean temperature difference given the delta T's
+def dtlm(dT1, dT2):
+    return ((dT2 - dT1) / np.log(dT2/dT1))
+
+
+# Finds the coolant outlet temperature for a given mass flow rate
+def Tco(coolantparams, mdotcoolant):
+    q_overall, cpair, Tc_i =  coolantparams
+    return Tc_i + q_overall / (mdotcoolant * cpair)
+
+
+# Finds the value of h using the nusselt number and parameters of the problem
+def hfactor(Nusselt, conductivity, diameter):
+    return Nusselt * conductivity / diameter
+
+
+# Returns the value of the Nusselt number for a turbulent, fully developed flow
+# in a circular tube
+def turbNusselt(Reynolds, Prandtl, heating):
+    if heating == True:
+        return 0.023 * (Reynolds**0.8) * (Prandtl**0.4)
+    else:
+        return 0.023 * (Reynolds**0.8) * (Prandtl**0.3)
+
+
+# Returns the value of the Nusselt number for a laminar, fully developed flow
+# in a circular tube with constant heat flux
+def lamNusselt():
+    return 4.36
+
+
+# Finds the length using the overall heat transfer coefficient equation
+def findlength(hiterm, hoterm, condterm, qoverall, dtlm):
+    rightside = hiterm + hoterm + condterm
+    leftside = dtlm / qoverall
+    return rightside / leftside
+
+
+# Finds the losses due to thermal conductivity, per 1m length
+def conductiveterm(kmetal):
+    # Note that all the geometry of Do/Di is already factored in here
+    return np.log(25/16) / (2 * np.pi * kmetal * 1)
+
+
+# Finds the minimum required radius based on the pressure drop
+def findradius(maxpressdrop, ffactor, length, mdotcoolant, rho):
+    return (ffactor * rho * length * (mdotcoolant**2) /
+            (9.75 * maxpressdrop))**(1/3)
+    
+    
+# Set up some values needed for the log mean temperature difference
+paralleldT1 = Ts_i - Tc_i
+counterflowdT2 = Ts_f - Tc_i
+
+# Parameters to feed the function that calculates the coolant outlet temp
+coolantparams = q_overall, cpair, Tc_i
+
+# Wild guesses for a Reynolds number, length, radius, and friction factor, etc.
+# Note that these can be easily adjusted in the end to improve accuracy
+reynoldsguess = 1.e6
+lengthguess = 55
+radiusguess = 0.015
+ffactor = 0.0175
+
+# These variables will be used to find the minimum cost
+parallelmin = 9.e99
+countermin = 9.e99
+
+# Create a couple lists to store all of the required information
+costlistcounter, costlistparallel, mdotlist = [], [], []
+
+# Use a for loop to iterate through a range of coolant mass flow rates to find
+# the optimal rate for cost.  This rate will be a low point in the graph.
+# Note that the delta T of the coolant can't be more than 100C, so the minimum
+# mass flow rate can't be more than 0.22 kg/s
+for mdotcoolant in np.arange(0.22, 3.01, 0.001):
+    # Create a list of all of the Mdot values evaluated
+    mdotlist.append(mdotcoolant)
+    
+    # Coolant outlet temperature depends on Mdot only
+    Tc_f = Tco(coolantparams, mdotcoolant)
+    
+    # Find the log mean temperature difference for both CF and Parallel
+    paralleldT2 = Ts_f - Tc_f
+    counterflowdT1 = Ts_i - Tc_f
+    paralleldtlm = dtlm(paralleldT1, paralleldT2)
+    counterflowdtlm = dtlm(counterflowdT1, counterflowdT2)
+    
+    # Find the h factors for a guessed radius (r will cancel out later)
+    hinner = hfactor(lamNusselt(), kwater, 2*radiusguess)
+    houter = hfactor(turbNusselt(reynoldsguess, Prandtl_air, True), kair, 
+                     2*(1.25*radiusguess))
+
+    # Find the heat transfer area per 1m length (will be used to solve for
+    # length later)
+    Ai = np.pi * 2*radiusguess * 1
+    Ao = np.pi * 2*(1.25*radiusguess) * 1
+    
+    # Find all the terms used in the overall heat tranfer coefficient eqn.
+    hiterm = 1 / (hinner*Ai)
+    hoterm = 1 / (houter*Ao)
+    condterm = conductiveterm(k625)
+    
+    # Find the length of the heat exchanger
+    lcounter = findlength(hiterm, hoterm, condterm, q_overall,
+                               counterflowdtlm)
+    lpara = findlength(hiterm, hoterm, condterm, q_overall,
+                                paralleldtlm)
+    
+    # Find the radius of the heat exchanger
+    rcounter = findradius(maxpressdrop, ffactor, lcounter, mdotcoolant, 
+                          rho_air)
+    rpara = findradius(maxpressdrop, ffactor, lpara, mdotcoolant, 
+                       rho_air)
+
+    # Using all of the information calculated, find the optimal cost and output
+    # all required values
+    counterflowcost = totalcost(rcounter, lcounter, mdotcoolant)
+    parallelflowcost = totalcost(rpara, lpara, mdotcoolant)
+    costlistcounter.append(counterflowcost)
+    costlistparallel.append(parallelflowcost)
+    if counterflowcost < countermin:
+        countermin = counterflowcost
+        mdotoptimalcounterflow = mdotcoolant
+        loptimalcounterflow = lcounter
+        roptimalcounterflow = rcounter
+        Tcooptimalcounter = Tc_f
+        Reynoldsoptimalcounter = reynoldsguess
+    if parallelflowcost < parallelmin:
+        parallelmin = parallelflowcost
+        mdotoptimalparallel = mdotcoolant
+        loptimalparallel = lpara
+        roptimalparallel = rpara
+        Tcooptimalparallel = Tc_f
+        Reynoldsoptimalparallel = reynoldsguess
+    
+    # Use some of the calculated values in the previous iteration to obtain
+    # better guesses for some of the values, as needed
+    reynoldsguess = mdotcoolant / (2.4375 * rcounter**2) *\
+                    (1.625 * rcounter) / mu_air
+    
+# Plot out the results of mdot coolant vs. cost
+plt.figure(1)
+plt.title('Counterflow Mdot Coolant vs. Cost')
+plt.plot(mdotlist, costlistcounter)
+plt.xlabel('Coolant Mass Flow Rate (kg/s)')
+plt.ylabel('Price in USD')
+
+plt.figure(2)
+plt.title('Parallel Mdot Coolant vs. Cost')
+plt.plot(mdotlist, costlistparallel)
+plt.xlabel('Coolant Mass Flow Rate (kg/s)')
+plt.ylabel('Price in USD')
+plt.show()
+
+# Output all the results in an easy to read format
+print('Optimal Counterflow Values -')
+print('Minimum Cost = ${:.2f}'.format(countermin))
+print('Optimal Mdot = {:.2f} kg/s'.format(mdotoptimalcounterflow))
+print('Optimal Coolant Outlet Temp = {:.2f} deg C'.format(Tcooptimalcounter))
+print('Optimal Length = {:.2f} m'.format(loptimalcounterflow))
+print('Optimal Inner Radius = {:.4f} m'.format(roptimalcounterflow))
+print('Coolant Reynolds Number = {:.2f}'.format(Reynoldsoptimalcounter))
+print('---------')
+print('Optimal Parallel Flow Values -')
+print('Minimum Cost = ${:.2f}'.format(parallelmin))
+print('Optimal Mdot = {:.2f} kg/s'.format(mdotoptimalparallel))
+print('Optimal Coolant Outlet Temp = {:.2f} deg C'.format(Tcooptimalparallel))
+print('Optimal Length = {:.2f} m'.format(loptimalparallel))
+print('Optimal Inner Radius = {:.4f} m'.format(roptimalparallel))
+print('Coolant Reynolds Number = {:.2f}'.format(Reynoldsoptimalparallel))
